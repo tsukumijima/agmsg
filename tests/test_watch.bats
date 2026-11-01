@@ -543,6 +543,9 @@ SQL
 
   run_watcher_until "sess-fresh" "$TEST_SKILL_DIR/fresh1.log" "M0-history"
   grep -q "M0-history" "$TEST_SKILL_DIR/fresh1.log"
+  # The first session ends (SessionEnd releases the seat it claimed), so the next
+  # one can claim it (fork: an unfiltered watcher claims before it subscribes).
+  printf '{"session_id":"sess-fresh"}' | bash "$SCRIPTS/session-end.sh" claude-code "$PROJ" >/dev/null 2>&1 || true
 
   bash "$SCRIPTS/send.sh" team bob alice "M-live" >/dev/null
   run_watcher_until "sess-fresh2" "$TEST_SKILL_DIR/fresh2.log" "M-live"
@@ -1081,7 +1084,11 @@ _record_handover_events() {
   refute grep -n 'kill "\$prev_pid"' "$watch_sh"
 }
 
-@test "watch: a second unfiltered watcher says it is sharing, and a lone one does not" {
+@test "watch: a second unfiltered watcher cannot share the first one's pairs, and a lone one does not warn" {
+  # Fork (tsukumijima/agmsg): an unfiltered watcher claims each free pair before
+  # subscribing it, so a second unfiltered watcher finds the pairs held and serves
+  # nothing instead of racing the first for the same read cursor. Upstream warned
+  # about that race; the race no longer happens, so neither does the warning.
   # Two watchers with no active name subscribe to the same unclaimed pairs. The
   # read cursor is one per (team, agent), so whoever polls first takes the row
   # and the other never sees it — and `inbox.sh` then truthfully says "no new
@@ -1104,6 +1111,8 @@ _record_handover_events() {
   # makes the negative stronger.
   run_watcher_for "$solo_id" "$BATS_TEST_TMPDIR/solo.out" 2
   refute grep -qF -- "another watcher" "$run_dir/watch.$solo_id.log"
+  # The solo session ends (SessionEnd releases what it claimed).
+  printf '{"session_id":"%s"}' "$solo_id" | bash "$SCRIPTS/session-end.sh" claude-code "$PROJ" >/dev/null 2>&1 || true
 
   # Now a live one, and a second started while it runs.
   AGMSG_WATCH_INTERVAL=1 bash "$SCRIPTS/watch.sh" "$first_id" "$PROJ" claude-code \
@@ -1120,14 +1129,9 @@ _record_handover_events() {
     >"$BATS_TEST_TMPDIR/second.out" 2>/dev/null 3>&- &
   local second_pid=$!
   _bg_track "$second_pid"
-  wait_for_file_contains "$second_log" "/agmsg actas"
+  wait_for_file_contains "$BATS_TEST_TMPDIR/second.out" "no available identities"
   _stop_watcher "$second_pid"
-
-  grep -q -F -- "another watcher" "$second_log"
-  # The remedy, not only the cause. A warning that names neither what is lost
-  # nor what to type leaves the reader stopped.
-  grep -q -F -- "polls first" "$second_log"
-  grep -q -F -- "/agmsg actas" "$second_log"
+  refute grep -q -F -- "another watcher" "$second_log"
 
   # And a filtered watcher stays quiet even with the same unfiltered one alive:
   # it is not sharing anything.
@@ -1970,12 +1974,13 @@ _claim_in_window() {   # <team> <agent> <new-sid> — steal the pair mid-turn
   [ -e "$cb.reached" ]
   grep -q 'BROAD-UNREADABLE-983' "$out"     # past delivery, before consume
 
-  # Canary for the premise: there is NO lock, so the baseline really is empty —
-  # if a lock existed here the test would be measuring the actas case again.
+  # Fork (tsukumijima/agmsg): an unfiltered watcher claims what it subscribes, so
+  # the lock exists and the baseline is this watcher's own id, as for an actas
+  # watcher. The unreadable-directory case below must still refuse.
   local lock; lock="$( ( export SKILL_DIR="$TEST_SKILL_DIR" RUN_DIR="$TEST_SKILL_DIR/run"
     # shellcheck disable=SC1090
     source "$SCRIPTS/lib/actas-lock.sh"; actas_lock_path team alice ) )"
-  refute test -f "$lock"
+  test -f "$lock"
 
   # With no file to chmod, the only way to make the read fail is to close the
   # directory it would live in. That is also the case `[ -e ]` cannot judge.

@@ -521,58 +521,21 @@ fi
 # --- Fail-closed fallback (#982). ---
 # No seat was established (no role-session record, and no single actas lock this
 # sid owns). Emitting the generic, unfiltered watch.sh here is NOT a "receive a
-# bit more" degradation: on a project with several registered pairs it subscribes
-# to ALL of them, and watch.sh stamps read_at + advances every pair's read_cursor
-# to the tip as it delivers — so it CONSUMES other seats' unread mail, silently,
-# and irreversibly short of hand-editing the store. That is the expensive
-# direction to default to. So reserve the generic watcher for a single-pair
-# project, where there is no one else's mail to take; with more than one pair,
-# stand down and say why (a silent no-watcher is indistinguishable from "no
-# messages arriving"), naming `/agmsg actas <name>` so the seat can be set
-# explicitly — which re-fires this hook down the role-filtered path above.
-_pair_count="$(printf '%s\n' "$PAIRS" | grep -c '.' || true)"
-if [ "${_pair_count:-0}" -le 1 ]; then
-  WATCH_COMMAND="$(printf '%q %q %q %q' "$WATCH" "$INSTANCE_ID" "$PROJECT" "$TYPE") $WATCH_MAX_ARG"
-  cat <<EOF
-$TERMINAL_LINE
-$TEAM_LINE
-AGMSG monitor mode: invoke the Monitor tool now with the following parameters,
-before any other action in this session.
+# bit more" degradation: it subscribes to the project's registered pairs, and
+# watch.sh stamps read_at + advances every pair's read_cursor to the tip as it
+# delivers — so it CONSUMES other seats' unread mail, silently, and irreversibly
+# short of hand-editing the store.
+#
+# Upstream still emitted it for a single-pair project, reasoning that there was
+# no one else's mail to take. That single pair is exactly the one a lockless
+# owner in another session is using: on 2026-11-01 a session started later in
+# the same directory got this directive, its watcher took the owner's mail, and
+# the owner never saw it (fork: tsukumijima/agmsg). A seat is received only by
+# the session that holds it, so stand down for one pair as well, and name
+# `/agmsg actas <name>` so the seat can be set explicitly — which re-fires this
+# hook down the role-filtered path above.
 
-  command: $WATCH_COMMAND
-  description: agmsg inbox stream
-  persistent: true
-  timeout_ms: 1800000
-$REARM_NOTE
-
-This streams incoming agmsg messages into the session in real time. Each
-output line is one message: \`<ts> | <team> | <from> → <to> | <body>\`.
-React to messages as they arrive; reply with \`send.sh\`.
-
-Use Claude Code's generic Monitor tool only. First confirm ToolSearch
-select:Monitor finds that generic tool; Azure Monitor, MCP monitor, or other
-monitor-branded tools are not valid for agmsg delivery. Do not start watch.sh
-with Bash/background/nohup or a shell task. Success is:
-
-  - Monitor(agmsg inbox stream) starts
-  - the transcript later contains Monitor event: "agmsg inbox stream"
-
-TaskList may list this task, but not every environment does (the desktop app's Code tab runs the Monitor and delivers its events without listing it), so a task missing from TaskList is not a failure: judge by the Monitor call starting and its events arriving. The background-task footer is not a reliable check either.
-
-If the generic Monitor tool is unavailable, do not treat a background shell
-watcher as success. Switch to turn delivery or run manual inbox checks instead;
-those fallbacks are not real-time monitor delivery.
-
-Note: On a /clear or --continue/--resume re-fire, you may shortly see a
-"Monitor … stopped" notification for an earlier 'agmsg inbox stream'
-task. That is the previous watcher being cleaned up to avoid duplicates
-— it is expected. Do NOT relaunch it; the Monitor you invoke from this
-directive replaces it.
-EOF
-  exit 0
-fi
-
-# Multiple registered seats here and none identified as this session: stand down.
+# Registered seats here and none identified as this session: stand down.
 # Emit NO watch.sh directive — there is nothing for the host to launch, so no
 # other seat's mail can be consumed — and explain the state so it is not mistaken
 # for silence.
@@ -582,11 +545,11 @@ $TERMINAL_LINE
 $TEAM_LINE
 AGMSG monitor mode: standing down — no inbox watcher was started for this session.
 
-This resumed session could not be matched to a seat (no role-session record, and
-no actas lock it owns), and this project has more than one registered seat. An
-unfiltered watcher would subscribe to every seat here and mark THEIR unread
-messages read as it delivered them — consuming mail addressed to other sessions.
-So no watcher is started rather than the wrong one.
+This session could not be matched to a seat (no role-session record, and no
+actas lock it owns). An unfiltered watcher would subscribe to the seats
+registered here and mark THEIR unread messages read as it delivered them —
+consuming mail addressed to other sessions that use those seats. So no watcher
+is started rather than the wrong one.
 
 No messages are lost: they remain in the store (\`history.sh <team> <agent>\`
 returns them). What is paused is live delivery into THIS session.

@@ -714,7 +714,9 @@ eperm_pid() {
   local sp="$TEST_PROJECT/Mobile Documents/o'brien proj"
   mkdir -p "$sp"
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$sp" >/dev/null
-  run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$sp" </dev/null
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "sid-188" "$sp" claude-code
+  run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$sp" <<< '{"session_id":"sid-188"}'
   [ "$status" -eq 0 ]
   [[ "$output" =~ "invoke the Monitor tool" ]]
   local cmdline
@@ -827,7 +829,9 @@ eperm_pid() {
 
   # The directive still has to be there: a warning that displaces it would stop
   # the session receiving anything at all, which is worse than the gap it names.
-  printf '%s\n' "$session_out" | grep -q -F -- "invoke the Monitor tool"
+  # Fork (tsukumijima/agmsg): an unseated session gets the stand-down text instead of
+  # a directive; either way the monitor-mode section must still follow the warning.
+  printf '%s\n' "$session_out" | grep -q -F -- "AGMSG monitor mode"
 
   # The real command is back from here on: the rest of this test requires a
   # `sync start` that can succeed, and a stub that always refuses would make
@@ -915,20 +919,20 @@ _seed_role_record() {
   [[ "$output" == *'Monitor(agmsg inbox stream (acting as alice)) starts'* ]]
 }
 
-@test "session-start: an unrecorded sid emits the generic directive (#339)" {
+# Fork (tsukumijima/agmsg): upstream gave an unrecorded sid the generic directive
+# on a single-seat project. That seat can be a live session's that joined without
+# actas; on 2026-11-01 a session started later in the same directory took its
+# mail. An unrecorded sid now stands down and is told to run actas.
+@test "session-start: an unrecorded sid stands down instead of taking the lone seat" {
   local sp="$TEST_PROJECT"
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$sp" >/dev/null
   # no record for this sid
 
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$sp" <<< '{"session_id":"sid-unknown"}'
   [ "$status" -eq 0 ]
-  [[ "$output" != *"resumed role"* ]]
-  [[ "$output" == *"invoke the Monitor tool"* ]]
-  # Generic directive: watch.sh has no 4th (role) arg.
-  local cmdline; cmdline=$(printf '%s\n' "$output" | sed -n 's/^[[:space:]]*command: //p')
-  eval "set -- $cmdline"
-  [ "$#" -eq 5 ]
-  [ "$5" = "--max-seconds=1750" ]
+  [[ "$output" != *"invoke the Monitor tool"* ]]
+  [[ "$output" == *"standing down"* ]]
+  [[ "$output" == *"/agmsg actas alice"* ]]
 }
 
 @test "session-start: a record for a role not registered here is ignored (#339)" {
@@ -941,7 +945,8 @@ _seed_role_record() {
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$sp" <<< '{"session_id":"sid-resumed"}'
   [ "$status" -eq 0 ]
   [[ "$output" != *"resumed role"* ]]
-  [[ "$output" == *"invoke the Monitor tool"* ]]
+  # Fork (tsukumijima/agmsg): not seated here, so it stands down rather than watching.
+  [[ "$output" == *"standing down"* ]]
 }
 
 @test "delivery set turn: emits AGMSG-DIRECTIVE to stop any running watcher" {
@@ -1124,6 +1129,8 @@ JSON
 
 @test "session-start: still emits the Monitor directive for a normal (non-worktree) cwd" {
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$TEST_PROJECT" >/dev/null
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "sid-normal" "$TEST_PROJECT" claude-code
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$TEST_PROJECT" <<< "{\"session_id\":\"sid-normal\",\"cwd\":\"$TEST_PROJECT\"}"
   [ "$status" -eq 0 ]
   [[ "$output" =~ "invoke the Monitor tool" ]]
@@ -1135,6 +1142,8 @@ JSON
   # form the actual .claude/worktrees path segment sequence.
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$TEST_PROJECT" >/dev/null
   local decoy_cwd="$TEST_PROJECT/.claude-tools/my-worktrees-app"
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "sid-decoy" "$TEST_PROJECT" claude-code
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$TEST_PROJECT" <<< "{\"session_id\":\"sid-decoy\",\"cwd\":\"$decoy_cwd\"}"
   [ "$status" -eq 0 ]
   [[ "$output" =~ "invoke the Monitor tool" ]]
@@ -1218,6 +1227,8 @@ EOF
 @test "session-start: resolves camelCase sessionId from stdin (grok/cursor field)" {
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$TEST_PROJECT" >/dev/null
   bash "$SCRIPTS/delivery.sh" set monitor claude-code "$TEST_PROJECT" >/dev/null
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "grokCamelSID" "$TEST_PROJECT" claude-code
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$TEST_PROJECT" <<<'{"sessionId":"grokCamelSID"}'
   [ "$status" -eq 0 ]
   local cmdline
@@ -1229,6 +1240,8 @@ EOF
 @test "session-start: falls back to GROK_SESSION_ID env when stdin lacks a session id" {
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$TEST_PROJECT" >/dev/null
   bash "$SCRIPTS/delivery.sh" set monitor claude-code "$TEST_PROJECT" >/dev/null
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "grokEnvSID" "$TEST_PROJECT" claude-code
   run env AGMSG_RESOLVE_PROJECT=0 GROK_SESSION_ID=grokEnvSID bash "$SCRIPTS/session-start.sh" claude-code "$TEST_PROJECT" <<<'{}'
   [ "$status" -eq 0 ]
   local cmdline
@@ -1240,6 +1253,8 @@ EOF
 @test "session-start: snake_case session_id still wins over camelCase (claude-code unaffected)" {
   env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/join.sh" team alice claude-code "$TEST_PROJECT" >/dev/null
   bash "$SCRIPTS/delivery.sh" set monitor claude-code "$TEST_PROJECT" >/dev/null
+  # Fork (tsukumijima/agmsg): only a session with a seat gets a Monitor directive, so seat it.
+  _seed_role_record team alice "snakeWins" "$TEST_PROJECT" claude-code
   run env AGMSG_RESOLVE_PROJECT=0 bash "$SCRIPTS/session-start.sh" claude-code "$TEST_PROJECT" <<<'{"session_id":"snakeWins","sessionId":"camelLoses"}'
   [ "$status" -eq 0 ]
   local cmdline

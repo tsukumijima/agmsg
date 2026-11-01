@@ -573,64 +573,11 @@ if [ -n "$PREV_PID_TO_DISPLACE" ]; then
   kill "$PREV_PID_TO_DISPLACE" 2>/dev/null || true
 fi
 
-# --- Say when this watcher is sharing an inbox with another. ---
-#
-# A watcher started WITHOUT an active name subscribes to every (team, agent)
-# registered for this project that nobody else has claimed. The read cursor is
-# one per pair, so when two such watchers exist, whoever polls first takes the
-# row and the other sees nothing -- the comment at the subscription site says
-# exactly this. The message is not duplicated and it is not lost loudly: it is
-# delivered to one of them, and the other's `inbox.sh` truthfully answers "no
-# new messages" because the row was read.
-#
-# Nothing observable is left behind, which is why this has to be said at the one
-# moment something can be said: startup.
-#
-# NOT a lease. This process still subscribes to exactly what it would have
-# subscribed to; it only stops being quiet about the fact that someone else is
-# doing the same. Exclusion is a separate decision.
-# Only when the hazard is real. A warning printed on every start is a warning
-# nobody reads, and an unfiltered watcher running alone is not in danger.
-if [ -z "$ACTIVE_NAME" ]; then
-  _sharing=0
-  for _pf in "$RUN_DIR"/watch.*.pid; do
-    [ -f "$_pf" ] || continue
-    [ "$_pf" = "$PIDFILE" ] && continue
-    _other_pid="$(cat "$_pf" 2>/dev/null || true)"
-    case "$_other_pid" in ''|*[!0-9]*) continue ;; esac
-    # `_agmsg_pid_alive_local`, not a bare `kill -0`. The bare form reads EPERM
-    # as "dead", so a watcher this process cannot signal -- another user, a
-    # sandbox -- would be counted as gone and its inbox-sharing left unsaid. The
-    # repo enforces this (`no shipped script decides liveness with a bare
-    # kill -0`), and it caught this line: the first version used the bare form
-    # while the comment above it claimed to use what the rest of the file uses.
-    #
-    # A pidfile left by a crashed watcher names nobody, which is why liveness is
-    # checked at all: counting one would fire the warning on an installation
-    # that has no second watcher.
-    _agmsg_pid_alive_local "$_other_pid" || continue
-    _other_filter="${_pf%.pid}.filter"
-    # An absent filter file is a watcher from BEFORE this change. It cannot be
-    # asked which project it serves, so it is not counted: warning on it would
-    # fire for every unrelated project sharing this install, and this warning is
-    # only worth having if it is true. A pre-change watcher in the SAME project
-    # is a real hazard that goes unreported here -- named in the PR rather than
-    # papered over, and it disappears as installs update.
-    [ -f "$_other_filter" ] || continue
-    _other_name="$(sed -n '1p' "$_other_filter" 2>/dev/null || true)"
-    _other_project="$(sed -n '2p' "$_other_filter" 2>/dev/null || true)"
-    # Same project only. RUN_DIR is per install; the subscription is per
-    # project, so a watcher in another project shares no pairs with this one.
-    [ "$_other_project" = "$PROJECT_PATH" ] || continue
-    [ "$_other_name" = "unfiltered" ] || continue
-    _sharing=$((_sharing + 1))
-  done
-  if [ "$_sharing" -gt 0 ]; then
-    watch_log "another watcher ($_sharing) is receiving for the same unclaimed roles in this project."
-    watch_log "messages addressed to those roles will reach whichever of us polls first, and the others will not see them."
-    watch_log "to receive only your own: /agmsg actas <name>"
-  fi
-fi
+# --- Two unfiltered watchers no longer share an inbox (fork: tsukumijima/agmsg). ---
+# Upstream warned here when another unfiltered watcher served the same unclaimed
+# roles, because whoever polled first took the row. Every watcher now claims a
+# pair before subscribing it (see "Honor actas exclusivity locks" below), so a
+# second unfiltered watcher finds the pairs held and serves none of them.
 # Readiness sentinels this watcher created (see #108). Populated once the
 # subscription is resolved; removed on exit so the file is present iff a live
 # watcher is currently receiving for that role.
@@ -928,16 +875,16 @@ fi
 # Honor actas exclusivity locks. A (team, agent) pair currently owned by
 # another live session is removed from this watcher's subscription so
 # messages addressed to that role only reach the owning session. Pairs we
-# own (or that are free) stay in. See #62.
+# own stay in; a free pair stays in only once this watcher has claimed it. See #62.
 #
-# When ACTIVE_NAME is set (the watcher was launched by an `actas` flow),
-# we also CLAIM the lock for each surviving pair. Implicit claim here makes
+# Every surviving pair is CLAIMED before it is subscribed, by a broad watcher
+# as well as by an `actas` one (ACTIVE_NAME set). Implicit claim here makes
 # the exclusivity take effect machine-wide on the next peer watcher cycle,
-# without needing the skill cmd templates to call a separate helper. If a
-# claim fails because another live session beat us to it, exit with an
+# without needing the skill cmd templates to call a separate helper. When an
+# `actas` claim fails because another live session beat us to it, exit with an
 # error — the user's host agent surfaces stderr and the original (broad)
 # watcher was already stopped by the actas flow, so this state is recoverable
-# by `drop` on the other session.
+# by `drop` on the other session. A broad watcher just skips that pair.
 if [ -n "$PAIRS" ]; then
   filtered=""
   skipped=""
@@ -971,34 +918,41 @@ if [ -n "$PAIRS" ]; then
         continue
         ;;
     esac
-    if [ -n "$ACTIVE_NAME" ]; then
-      # Implicit claim — `actas` was the invoking flow. Covers the race
-      # where state-check said free but a peer claimed it between then and
-      # now.
-      result=$(actas_lock_claim "$_team" "$_agent" "$SESSION_ID" 2>/dev/null || true)
-      # ONLY an explicit `ok` subscribes. Every other answer — named or not —
-      # skips. The previous shape listed the two refusals and let everything else
-      # fall through to success, so a claim that failed before it learned
-      # anything (mktemp, an uncreatable lock dir, three contended reclaim
-      # rounds) printed nothing and was read as "we got it". Naming the success
-      # instead of the failures is what makes an unanticipated answer safe.
-      # (#983, review)
-      case "$result" in
-        ok) : ;;
-        held:*)
+    # Claim before subscribing, for a broad watcher too (fork: tsukumijima/agmsg).
+    # A broad watcher used to subscribe a FREE pair without claiming it, so the
+    # seat stayed lockless: a later session in the same directory could take it
+    # (session-start's single-pair path) and its own broad watcher would read and
+    # mark the owner's mail. Subscribing only what this instance holds makes the
+    # first watcher the owner and every later session see `other:` and skip.
+    # With ACTIVE_NAME a refused claim is a hard failure (below); without it, a
+    # pair a peer claimed between the state check and now is skipped silently.
+    result=$(actas_lock_claim "$_team" "$_agent" "$SESSION_ID" 2>/dev/null || true)
+    # ONLY an explicit `ok` subscribes. Every other answer — named or not —
+    # skips. The previous shape listed the two refusals and let everything else
+    # fall through to success, so a claim that failed before it learned
+    # anything (mktemp, an uncreatable lock dir, three contended reclaim
+    # rounds) printed nothing and was read as "we got it". Naming the success
+    # instead of the failures is what makes an unanticipated answer safe.
+    # (#983, review)
+    case "$result" in
+      ok) : ;;
+      held:*)
+        if [ -n "$ACTIVE_NAME" ]; then
           held="${held:+$held }${_team}/${_agent}(${result#held:})"
-          continue
-          ;;
-        unknown:*)
-          skipped="${skipped:+$skipped }${_team}/${_agent}(unverified:${result#unknown:})"
-          continue
-          ;;
-        *)
-          skipped="${skipped:+$skipped }${_team}/${_agent}(unverified:claim_unrecognized)"
-          continue
-          ;;
-      esac
-    fi
+        else
+          skipped="${skipped:+$skipped }${_team}/${_agent}(${result#held:})"
+        fi
+        continue
+        ;;
+      unknown:*)
+        skipped="${skipped:+$skipped }${_team}/${_agent}(unverified:${result#unknown:})"
+        continue
+        ;;
+      *)
+        skipped="${skipped:+$skipped }${_team}/${_agent}(unverified:claim_unrecognized)"
+        continue
+        ;;
+    esac
     filtered="${filtered:+$filtered$'\n'}${_team}"$'\t'"${_agent}"
   done <<< "$PAIRS"
   PAIRS="$filtered"

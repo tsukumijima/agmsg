@@ -189,6 +189,8 @@ _session_start_with_pid() {   # <sid>
 @test "session-start: choice agmsgd and agmsgd stopped -> a stopped notice, no Monitor directive, destination recorded (#1810)" {
   _mark_daemon_enabled_stopped
   _choose agmsgd
+  # The seat is this session's (fork: a session with no record no longer takes a lone seat).
+  ( source "$SCRIPTS/lib/role-session.sh"; agmsg_role_session_record team alice sid-stopped "$PROJ" "" )
   run _session_start_with_pid "sid-stopped"
   [ "$status" -eq 0 ]
   refute grep -qF "AGMSG monitor mode" <<<"$output"
@@ -247,6 +249,8 @@ _session_start_with_pid() {   # <sid>
 @test "session-start: choice agmsgd and agmsgd running -> native delivery as before (#1810)" {
   _mark_daemon_ready
   _choose agmsgd
+  # The seat is this session's (fork: a session with no record no longer takes a lone seat).
+  ( source "$SCRIPTS/lib/role-session.sh"; agmsg_role_session_record team alice sid-running "$PROJ" "" )
   run _session_start_with_pid "sid-running"
   [ "$status" -eq 0 ]
   refute grep -qF "AGMSG monitor mode" <<<"$output"
@@ -259,21 +263,22 @@ _session_start_with_pid() {   # <sid>
   grep -qF "AGMSG monitor mode" <<<"$output"
 }
 
-# #1577 review required a seat with no record to keep Monitor, since the
-# daemon cannot address it. rc.2 (the new path is the default)
-# reverses that for the one case where the seat is not in doubt: the project
-# has a single registered pair of this type, which is the seat the Monitor
-# directive itself would watch. Nothing is recorded and no lock exists (the
-# shape of a seat never recorded); the switch writes the record and takes the lock.
-@test "session-start: agmsgd ready, NO record, NO lock, one registered seat -> switches to direct delivery" {
+# Upstream switched a session with NO record and NO lock to direct delivery when
+# the project had a single registered pair. That pair can be a live session's
+# seat it joined without actas: on 2026-11-01 its notices moved to a session
+# started later in the same directory. The fork (tsukumijima/agmsg) leaves the
+# seat alone: no record is written, no lock is taken, and the session is told to
+# run actas.
+@test "session-start: agmsgd ready, NO record, NO lock, one registered seat -> the seat is not taken" {
   _mark_daemon_ready
   run env AGMSG_AGENT_PID=$$ AGMSG_RESOLVE_PROJECT=0 CLAUDE_CODE_MESSAGING_SOCKET="uds:/tmp/cc-socks/sid-ready-no-record.sock" \
     bash "$SCRIPTS/session-start.sh" claude-code "$PROJ" <<< '{"session_id":"sid-ready-no-record"}'
   [ "$status" -eq 0 ]
   refute grep -q "AGMSG monitor mode" <<<"$output"
-  grep -qF "agmsgd is running and will deliver" <<<"$output"
+  refute grep -qF "agmsgd is running and will deliver" <<<"$output"
+  grep -qF "/agmsg actas" <<<"$output"
   source "$SCRIPTS/lib/role-session.sh"
-  [ "$(agmsg_role_session_get team alice messaging_socket)" = /tmp/cc-socks/sid-ready-no-record.sock ]
+  [ -z "$(agmsg_role_session_get team alice messaging_socket)" ]
 }
 
 # #1577 re-review: comparing only the BARE session id let one process

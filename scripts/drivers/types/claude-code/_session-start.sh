@@ -118,18 +118,13 @@ agmsg_session_start() {
 ${PAIRS:-}
 EOF
   if [ "$_n" -eq 0 ]; then
-    # Nothing recorded for this session. The seat is still decided when this
-    # project has exactly one registered pair of this type: that is the seat
-    # session-start.sh's own Monitor directive would watch (it only falls
-    # back to the generic watcher for a single pair), so take it.
-    if [ "$(printf '%s\n' "${PAIRS:-}" | grep -c '.' || true)" -eq 1 ]; then
-      IFS="$_tab" read -r pair_team pair_agent <<EOF
-${PAIRS:-}
-EOF
-    else
-      echo "AGMSG delivery: this project has several registered seats and none is recorded for this session, so the native channel is not used and no Monitor is armed. Next: run /agmsg actas <name> (it switches to direct delivery)."
-      exit 0
-    fi
+    # Nothing recorded for this session, so no seat is this session's. Upstream
+    # still took the seat when the project had exactly one registered pair; that
+    # pair can belong to a live session that joined without actas, and on
+    # 2026-11-01 its notices moved to a session started later in the same
+    # directory (fork: tsukumijima/agmsg). The seat is set by actas, not inferred.
+    echo "AGMSG delivery: no seat is recorded for this session, so the native channel is not used and no Monitor is armed. Next: run /agmsg actas <name> (it switches to direct delivery)."
+    exit 0
   elif [ "$_n" -gt 1 ]; then
     echo "AGMSG delivery: this session is recorded under $_n registered seats, so the native channel is not used and no Monitor is armed. Next: run /agmsg actas <name> for the seat to use; the extra records stay until they are cleaned up."
     exit 0
