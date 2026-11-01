@@ -121,6 +121,14 @@ case "$ACTION" in
     if [ "$TYPE" = claude-code ]; then
       bash "$SCRIPT_DIR/delivery.sh" set monitor "$TYPE" "$PROJECT" >/dev/null
       echo "agmsgd delivers to this project. This session moves to it when it restarts or runs actas; no Monitor is armed for it."
+    elif [ "$TYPE" = codex ]; then
+      # agmsgd reaches a Codex thread through `codex queue`, which Codex reads only
+      # once the running turn ends, so a Codex seat on agmsgd alone hears nothing
+      # mid-turn. Keep turn's PostToolUse/Stop hooks beside it for that (fork:
+      # tsukumijima/agmsg; upstream switched the project to monitor here, which
+      # removed those hooks).
+      echo "This session keeps its current delivery until it restarts or runs actas; agmsgd can take over once it confirms this session's destination. Turn hooks stay for messages that arrive mid-turn."
+      bash "$SCRIPT_DIR/delivery.sh" set turn "$TYPE" "$PROJECT"
     else
       echo "This session keeps its current delivery until it restarts or runs actas; agmsgd can take over once it confirms this session's destination."
       bash "$SCRIPT_DIR/delivery.sh" set monitor "$TYPE" "$PROJECT"

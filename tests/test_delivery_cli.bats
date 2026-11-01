@@ -235,3 +235,15 @@ STUB
   refute grep -Fq "this project: agmsgd" <<<"$output"
   grep -Fq "note: this project chose agmsgd, but agmsgd is turned off" <<<"$output"
 }
+
+# Fork (tsukumijima/agmsg): agmsgd reaches a Codex thread through `codex queue`,
+# read only between turns, so choosing agmsgd for Codex keeps turn's PostToolUse
+# hook for messages that arrive mid-turn. On 2026-11-01 upstream switched the
+# project to monitor here, and two Codex App projects stopped hearing mid-turn.
+@test "delivery agmsgd: a Codex project keeps the turn hooks beside agmsgd" {
+  _mark_daemon_ready
+  run bash "$SCRIPTS/agmsg" delivery agmsgd --type codex --project "$PROJECT"
+  [ "$status" -eq 0 ]
+  grep -Fq "check-inbox.sh" "$PROJECT/.codex/hooks.json"
+  grep -Fq "PostToolUse" "$PROJECT/.codex/hooks.json"
+}
