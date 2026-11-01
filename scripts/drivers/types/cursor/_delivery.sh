@@ -48,5 +48,62 @@ stale memory of their last known pane. Act on one with '$SKILL_DIR/scripts/peek.
 says whether it worked and, if not, why.
 EOF
   fi
+  _agmsg_cursor_hooks_apply "$project" "$mode"
 }
 agmsg_delivery_status() { rulefile_status "$@"; }
+
+# Cursor hooks (fork: tsukumijima/agmsg). The rule file above only asks the model
+# to check the inbox after a tool call; a conversation waiting for a reply runs
+# no tool and never sees one. Turn mode therefore also installs cursor-hook.sh as
+# the project's postToolUse and stop hooks in .cursor/hooks.json (Cursor's own
+# hooks file, read by both the IDE and cursor-agent), and off removes them. Only
+# entries that run cursor-hook.sh are touched; every other hook stays as it was.
+_agmsg_cursor_hooks_apply() {   # <project> <mode>
+  local project="$1" mode="$2"
+  local hooks_file="$project/.cursor/hooks.json"
+  local script="$SKILL_DIR/scripts/drivers/types/cursor/cursor-hook.sh"
+  [ "$mode" = turn ] || [ -f "$hooks_file" ] || return 0
+  local post_cmd stop_cmd
+  if command -v cygpath >/dev/null 2>&1; then
+    # Native Windows: Cursor starts the command without a POSIX shell, so name bash.
+    local bash_path script_path
+    bash_path="$(cygpath -m "$(command -v bash)")"
+    script_path="$(cygpath -m "$script")"
+    post_cmd="\"$bash_path\" \"$script_path\" post"
+    stop_cmd="\"$bash_path\" \"$script_path\" stop"
+  else
+    post_cmd="'$script' post"
+    stop_cmd="'$script' stop"
+  fi
+  mkdir -p "$(dirname "$hooks_file")"
+  [ -f "$hooks_file" ] || printf '{"version":1,"hooks":{}}\n' > "$hooks_file"
+  local src_sql tmp tmp_sql post_lit stop_lit add_post add_stop wrote
+  src_sql="$(agmsg_sql_readfile_path "$hooks_file")"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/agmsg.XXXXXX")"
+  tmp_sql="$(agmsg_sql_readfile_path "$tmp")"
+  post_lit="$(printf '%s' "$post_cmd" | sed "s/'/''/g")"
+  stop_lit="$(printf '%s' "$stop_cmd" | sed "s/'/''/g")"
+  add_post="" add_stop=""
+  if [ "$mode" = turn ]; then
+    add_post="UNION ALL SELECT json_object('command', '$post_lit', 'timeout', 10)"
+    # The stop hook waits up to AGMSG_CURSOR_WAIT_SECONDS (1800) for mail; the
+    # timeout stays above that, and loop_limit null lets every new message wake it.
+    add_stop="UNION ALL SELECT json_object('command', '$stop_lit', 'timeout', 1900, 'loop_limit', json('null'))"
+  fi
+  wrote="$(agmsg_sqlite_mem "
+    WITH base AS (SELECT CASE WHEN json_extract(readfile('$src_sql'), '\$.hooks') IS NULL
+                              THEN json_set(readfile('$src_sql'), '\$.hooks', json('{}'))
+                              ELSE readfile('$src_sql') END AS s),
+    out AS (SELECT json_set(s,
+      '\$.hooks.postToolUse', json((SELECT json_group_array(json(v)) FROM (
+        SELECT value AS v FROM json_each(json_extract(s, '\$.hooks.postToolUse'))
+          WHERE COALESCE(json_extract(value, '\$.command'), '') NOT LIKE '%cursor-hook.sh%'
+        $add_post))),
+      '\$.hooks.stop', json((SELECT json_group_array(json(v)) FROM (
+        SELECT value AS v FROM json_each(json_extract(s, '\$.hooks.stop'))
+          WHERE COALESCE(json_extract(value, '\$.command'), '') NOT LIKE '%cursor-hook.sh%'
+        $add_stop)))) AS blob FROM base)
+    SELECT writefile('$tmp_sql', blob) = length(CAST(blob AS BLOB)) FROM out;")" || { rm -f "$tmp"; return 1; }
+  [ "$wrote" = 1 ] || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$hooks_file"
+}
