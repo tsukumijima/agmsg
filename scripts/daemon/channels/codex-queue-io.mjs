@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { isAbsolute } from "node:path";
+import { trySteerCodexTurn } from "./codex-steer.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_OUTPUT_CHARS = 64 * 1024;
@@ -55,12 +56,22 @@ export async function runCodexQueue({
   onChildStart,
   env = process.env,
   spawnProcess = spawn,
+  steer = trySteerCodexTurn,
 }) {
   if (typeof executable !== "string" || executable.length === 0) throw new TypeError("missing Codex executable");
   if (typeof codexHome !== "string" || !isAbsolute(codexHome)) throw new TypeError("CODEX_HOME must be absolute");
   if (!UUID.test(thread ?? "")) throw new TypeError("thread must be a Codex UUID");
   if (typeof message !== "string" || !message) throw new TypeError("message must not be empty");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError("timeoutMs must be a positive integer");
+  if (signal?.aborted) return { kind: "cancelled", reason: "daemon_stopping" };
+
+  // A thread busy in a turn takes the notice now through turn/steer; an idle
+  // thread, or one the local daemon does not hold, goes through `codex queue`
+  // (see codex-steer.mjs). A steered notice has no queue item, so it reports a
+  // fresh id the same way `codex queue` would.
+  if (await steer({ codexHome, thread, message, timeoutMs: Math.min(timeoutMs, 5000) })) {
+    return { kind: "queued", queueItemId: randomUUID() };
+  }
   if (signal?.aborted) return { kind: "cancelled", reason: "daemon_stopping" };
 
   const args = ["queue", "--thread", thread, "--message", message];

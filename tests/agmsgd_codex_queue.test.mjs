@@ -1009,3 +1009,30 @@ test('one unusable team is skipped alone: the other teams are still polled and t
   assert.equal(after.some((seat) => seat[0] === 'broken' && seat[1] === ''), false, 'the reason goes away once the team is readable, even across a restart');
   await restarted.stop();
 });
+
+// Fork (tsukumijima/agmsg): a thread busy in a turn takes the notice through
+// turn/steer and `codex queue` never runs; an idle thread goes through `codex
+// queue` as before. On 2026-11-01 a Codex App thread in a long turn heard nothing
+// until the turn ended, because `codex queue` is read only between turns.
+test('a thread busy in a turn is steered and codex queue is not spawned; an idle one is queued', async () => {
+  const message = inboxNudge(newNonce());
+  let spawned = 0;
+  const spawnProcess = () => {
+    spawned += 1;
+    return fakeChild({ stdout: `Queued message ${itemId} for thread ${thread}.\n` });
+  };
+  const steered = await runCodexQueue({
+    executable: '/opt/codex', codexHome: '/tmp/profile', thread, message, timeoutMs: 5000,
+    spawnProcess, steer: async (request) => request.thread === thread && request.message === message,
+  });
+  assert.equal(steered.kind, 'queued');
+  assert.match(steered.queueItemId, /^[0-9a-f-]{36}$/);
+  assert.equal(spawned, 0);
+
+  const queued = await runCodexQueue({
+    executable: '/opt/codex', codexHome: '/tmp/profile', thread, message, timeoutMs: 5000,
+    spawnProcess, steer: async () => false,
+  });
+  assert.deepEqual(queued, { kind: 'queued', queueItemId: itemId });
+  assert.equal(spawned, 1);
+});
